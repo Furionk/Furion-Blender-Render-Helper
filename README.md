@@ -1,4 +1,4 @@
-# Furion Render Helper
+# Furion Blender Render Helper
 
 This is just a blender plugin for me to batch render with multi-channel output and customizable filename patterns.
 
