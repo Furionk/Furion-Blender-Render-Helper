@@ -36,8 +36,10 @@ This feature intelligently extracts keyframes from the Dope Sheet Summary timeli
 | `(ViewLayer)` | `ViewLayer` | View layer name |
 | `(Frame)` | `0001` | Frame with padding |
 | `(Channel)` | `Combined`, `Depth`, `Mist` | Render pass name (required for multi-pass) |
-| `(Start:yyyyMMdd)` | `20251018` | Render start date/time |
+| `(Start:yyyyMMdd)` | `20251028` | Render start date/time |
 | `(End:HHmmss)` | `172118` | Render end time |
+| `(BatchStart:yyyyMMdd)` | `20251028` | Batch render start date/time |
+| `(RenderDurationSeconds)` | `45.23` | Render duration in seconds |
 
 ### Date/Time Format
 - `yyyy` = year, `MM` = month, `dd` = day, `HH` = hour, `mm` = minute, `ss` = second
@@ -53,7 +55,13 @@ This feature intelligently extracts keyframes from the Dope Sheet Summary timeli
 → MyProject_0001_Depth.png
 
 (FileName)_(ViewLayer)_(Frame)_(Start:yyyyMMdd)
-→ MyProject_Beauty_0001_20251018.png
+→ MyProject_Beauty_0001_20251028.png
+
+(FileName)_(Frame)_(RenderDurationSeconds)s
+→ MyProject_0001_45.23s.png
+
+(FileName)_(BatchStart:yyyyMMdd)_(Frame)
+→ MyProject_20251028_0001.png
 ```
 
 ## Multi-Channel Rendering

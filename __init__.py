@@ -13,7 +13,7 @@ This extension provides tools for batch rendering specific frames with advanced 
 bl_info = {
     "name": "Furion Render Helper",
     "author": "Furion Mashiou",
-    "version": (1, 4, 0),
+    "version": (1, 4, 2),
     "blender": (4, 0, 0),
     "location": "Properties > Render Properties > Furion Render Helper",
     "description": "Advanced frame rendering with multi-channel output and customizable filename patterns",
@@ -34,6 +34,16 @@ output_folder_path = ""
 filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
 
 
+def get_active_3d_view():
+    """Get the currently active 3D viewport space"""
+    for area in bpy.context.screen.areas:
+        if area.type == 'VIEW_3D':
+            for space in area.spaces:
+                if space.type == 'VIEW_3D':
+                    return space
+    return None
+
+
 # Add-on Preferences Class
 class FurionRenderHelperPreferences(AddonPreferences):
     """Preferences for Furion Render Helper"""
@@ -43,10 +53,10 @@ class FurionRenderHelperPreferences(AddonPreferences):
         name="Output Path Source",
         description="Choose where to read the output folder path from",
         items=[
-            ('USER_PREFS', "User Preferences", "Read from user preferences JSON file (default, persistent across projects)"),
-            ('SCENE_PROPS', "Scene Properties", "Read from current scene's custom properties (per-project settings)"),
+            ('USER_PREFS', "User Preferences", "Read from user preferences JSON file (global, persistent across projects)"),
+            ('SCENE_PROPS', "Scene Properties", "Read from current scene's custom properties (per-project settings, default)"),
         ],
-        default='USER_PREFS',
+        default='SCENE_PROPS',
         update=lambda self, context: load_output_folder_from_source(context)
     )
     
@@ -69,14 +79,18 @@ class FurionRenderHelperPreferences(AddonPreferences):
         col.label(text="• Scene Properties: Per-project setting stored in blend file")
         col.label(text="  Different output folder for each blend file")
         
-        # Show current output folder
+        # Show current settings
         layout.separator()
         current_box = layout.box()
-        global output_folder_path
+        current_box.label(text="Current Settings:", icon='SETTINGS')
+        
+        global output_folder_path, filename_pattern
+        col = current_box.column(align=True)
         if output_folder_path:
-            current_box.label(text=f"Current Output Folder: {output_folder_path}", icon='CHECKMARK')
+            col.label(text=f"Output folder: {output_folder_path}", icon='FOLDER_REDIRECT')
         else:
-            current_box.label(text="Current Output Folder: (Not set, will use blend file directory)", icon='INFO')
+            col.label(text="Output folder: (Blend file directory)", icon='FOLDER_REDIRECT')
+        col.label(text=f"Filename pattern: {filename_pattern}", icon='FILE_TEXT')
 
 # Path to store user preferences
 def get_preferences_file():
@@ -98,7 +112,7 @@ def get_output_path_source():
     prefs = get_addon_preferences()
     if prefs:
         return prefs.output_path_source
-    return 'USER_PREFS'  # Default
+    return 'SCENE_PROPS'  # Default
 
 
 def load_output_folder_from_scene(scene=None):
@@ -138,6 +152,73 @@ def save_output_folder_to_scene(scene=None):
     print(f"Saved output folder to scene: {output_folder_path}")
 
 
+def load_filename_pattern_from_scene(scene=None):
+    """Load filename pattern from scene custom properties"""
+    global filename_pattern
+    
+    if scene is None:
+        try:
+            scene = bpy.context.scene
+        except:
+            return
+    
+    if "frh_filename_pattern" in scene:
+        saved_pattern = scene["frh_filename_pattern"]
+        if saved_pattern:
+            filename_pattern = saved_pattern
+            print(f"Loaded filename pattern from scene: {filename_pattern}")
+        else:
+            filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
+    else:
+        filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
+        print("No filename pattern stored in scene properties")
+
+
+def save_filename_pattern_to_scene(scene=None):
+    """Save filename pattern to scene custom properties"""
+    global filename_pattern
+    
+    if scene is None:
+        try:
+            scene = bpy.context.scene
+        except:
+            return
+    
+    scene["frh_filename_pattern"] = filename_pattern
+    print(f"Saved filename pattern to scene: {filename_pattern}")
+
+
+def load_filename_pattern_from_user_prefs():
+    """Load filename pattern from user preferences JSON file"""
+    global filename_pattern
+    prefs_file = get_preferences_file()
+    try:
+        if os.path.exists(prefs_file):
+            with open(prefs_file, 'r') as f:
+                prefs = json.load(f)
+                if 'filename_pattern' in prefs:
+                    filename_pattern = prefs['filename_pattern']
+                    print(f"Loaded filename pattern from user prefs: {filename_pattern}")
+                else:
+                    filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
+        else:
+            filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
+    except Exception as e:
+        print(f"Could not load filename pattern from user preferences: {e}")
+        filename_pattern = "(FileName)_(Camera)_frame_(Frame)"
+
+
+def load_filename_pattern_from_source(context=None):
+    """Load filename pattern based on the current source setting"""
+    source = get_output_path_source()
+    
+    if source == 'SCENE_PROPS':
+        scene = context.scene if context else bpy.context.scene
+        load_filename_pattern_from_scene(scene)
+    else:  # USER_PREFS
+        load_filename_pattern_from_user_prefs()
+
+
 def load_output_folder_from_user_prefs():
     """Load output folder from user preferences JSON file"""
     global output_folder_path
@@ -161,14 +242,16 @@ def load_output_folder_from_user_prefs():
 
 
 def load_output_folder_from_source(context=None):
-    """Load output folder based on the current source setting"""
+    """Load output folder and filename pattern based on the current source setting"""
     source = get_output_path_source()
     
     if source == 'SCENE_PROPS':
         scene = context.scene if context else bpy.context.scene
         load_output_folder_from_scene(scene)
+        load_filename_pattern_from_scene(scene)
     else:  # USER_PREFS
         load_output_folder_from_user_prefs()
+        load_filename_pattern_from_user_prefs()
 
 
 def load_user_preferences():
@@ -211,26 +294,24 @@ def save_user_preferences():
             with open(prefs_file, 'r') as f:
                 prefs = json.load(f)
         
-        # Update filename pattern (always save to user prefs)
-        prefs['filename_pattern'] = filename_pattern
-        
-        # Update output folder based on source setting
+        # Update output folder and filename pattern based on source setting
         source = get_output_path_source()
         if source == 'USER_PREFS':
-            # Save to user preferences JSON
+            # Save both to user preferences JSON
             prefs['default_output_folder'] = output_folder_path
-            print(f"Saved output folder to user preferences: {output_folder_path}")
+            prefs['filename_pattern'] = filename_pattern
+            print(f"Saving to user prefs - folder: {output_folder_path}, pattern: {filename_pattern}")
         else:  # SCENE_PROPS
             # Save to scene custom properties
             save_output_folder_to_scene()
-            # Keep the old value in JSON for when user switches back
-            # prefs['default_output_folder'] stays as-is
+            save_filename_pattern_to_scene()
+            print(f"Saving to scene props - folder: {output_folder_path}, pattern: {filename_pattern}")
         
-        # Save preferences
+        # Save preferences file
         with open(prefs_file, 'w') as f:
             json.dump(prefs, f, indent=2)
         
-        print(f"Saved preferences - pattern: {filename_pattern}")
+        print(f"Saved preferences")
     except Exception as e:
         print(f"Could not save preferences: {e}")
 
@@ -246,7 +327,7 @@ load_user_preferences()
 @bpy.app.handlers.persistent
 def on_file_load(dummy):
     """Handler called when a blend file is loaded"""
-    # Reload output folder based on current source setting
+    # Reload output folder and filename pattern based on current source setting
     load_output_folder_from_source()
 
 
@@ -535,7 +616,7 @@ def save_render_result(scene, filepath):
         return False
 
 
-def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, start_time=None, end_time=None, channel_name=None, view_layer_name=None):
+def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, start_time=None, end_time=None, channel_name=None, view_layer_name=None, batch_start_time=None, render_duration_seconds=None):
     """
     Generate filename from pattern with token replacement
     
@@ -548,6 +629,8 @@ def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, 
                 Required when multiple render passes are enabled to avoid overwriting
     (Start:format) - Render start date/time with custom format
     (End:format) - Render end date/time with custom format
+    (BatchStart:format) - Batch render start date/time with custom format
+    (RenderDurationSeconds) - Render duration in seconds for single frame
     
     Format examples:
     yyyyMMdd = 20251018
@@ -570,9 +653,16 @@ def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, 
     if "(Channel)" in result:
         result = result.replace("(Channel)", channel_name or "Combined")
     
+    # Replace render duration token
+    if "(RenderDurationSeconds)" in result:
+        if render_duration_seconds is not None:
+            result = result.replace("(RenderDurationSeconds)", f"{render_duration_seconds:.2f}")
+        else:
+            result = result.replace("(RenderDurationSeconds)", "0.00")
+    
     # Replace datetime tokens with regex to handle custom formats
     def replace_datetime_token(match):
-        token_type = match.group(1)  # "Start" or "End"
+        token_type = match.group(1)  # "Start", "End", or "BatchStart"
         datetime_format = match.group(2)  # Custom format string
         
         # Select the appropriate datetime
@@ -580,6 +670,8 @@ def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, 
             dt = start_time
         elif token_type == "End" and end_time:
             dt = end_time
+        elif token_type == "BatchStart" and batch_start_time:
+            dt = batch_start_time
         else:
             # Use current time as fallback
             dt = datetime.now()
@@ -600,8 +692,8 @@ def generate_filename_from_pattern(pattern, blend_name, camera_name, frame_num, 
             print(f"Warning: Invalid datetime format '{datetime_format}': {e}")
             return dt.strftime("%Y%m%d_%H%M%S")  # Fallback format
     
-    # Replace Start and End tokens with format
-    result = re.sub(r'\((Start|End):([^)]+)\)', replace_datetime_token, result)
+    # Replace Start, End, and BatchStart tokens with format
+    result = re.sub(r'\((Start|End|BatchStart):([^)]+)\)', replace_datetime_token, result)
     
     # Clean up any remaining tokens or invalid characters for filenames
     # Remove invalid filename characters
@@ -714,6 +806,21 @@ class RENDER_OT_set_filename_pattern(Operator):
         layout.prop(self, "pattern")
         layout.separator()
         
+        # Show information about storage location
+        source = get_output_path_source()
+        info_box = layout.box()
+        if source == 'SCENE_PROPS':
+            info_box.label(text="Storage: Scene Properties (per-project)", icon='SCENE_DATA')
+            info_box.label(text="This pattern will be saved in the blend file")
+        else:  # USER_PREFS
+            info_box.label(text="Storage: User Preferences (global)", icon='PREFERENCES')
+            info_box.label(text="This pattern will be saved as your default")
+        
+        layout.separator()
+        layout.label(text="Change storage location in Add-on Preferences", icon='INFO')
+        
+        layout.separator()
+        
         # Help section
         help_box = layout.box()
         help_box.label(text="Available Tokens:", icon='INFO')
@@ -725,14 +832,16 @@ class RENDER_OT_set_filename_pattern(Operator):
         help_box.label(text="             Required for multi-pass rendering")
         help_box.label(text="(Start:format) - Render start date/time")
         help_box.label(text="(End:format) - Render end date/time")
+        help_box.label(text="(BatchStart:format) - Batch render start date/time")
+        help_box.label(text="(RenderDurationSeconds) - Render duration in seconds")
         
         layout.separator()
         format_box = layout.box()
         format_box.label(text="Date/Time Format Examples:", icon='TIME')
-        format_box.label(text="yyyyMMdd → 20251018")
-        format_box.label(text="yyyyMMddHHmmss → 20251018172118")  
-        format_box.label(text="yyyy-MM-dd → 2025-10-18")
-        format_box.label(text="yyyyMMdd_HH:mm:ss → 20251018_17:21:18")
+        format_box.label(text="yyyyMMdd → 20251028")
+        format_box.label(text="yyyyMMddHHmmss → 20251028172118")  
+        format_box.label(text="yyyy-MM-dd → 2025-10-28")
+        format_box.label(text="yyyyMMdd_HH:mm:ss → 20251028_17:21:18")
         
         layout.separator()
         example_box = layout.box()
@@ -771,6 +880,7 @@ class RENDER_OT_specific_frames(Operator):
     _original_use_persistent_data = False
     _render_start_time = None
     _frame_start_time = None
+    _batch_start_time = None  # Time when batch rendering starts
     
     def modal(self, context, event):
         if event.type == 'TIMER':
@@ -821,7 +931,9 @@ class RENDER_OT_specific_frames(Operator):
                     start_time=self._render_start_time,
                     end_time=None,  # End time not available yet during rendering
                     channel_name=channel_name,
-                    view_layer_name=view_layer_name
+                    view_layer_name=view_layer_name,
+                    batch_start_time=self._batch_start_time,
+                    render_duration_seconds=None  # Will be calculated after render
                 )
             else:
                 filename = generate_filename_from_pattern(
@@ -832,7 +944,9 @@ class RENDER_OT_specific_frames(Operator):
                     start_time=self._render_start_time,
                     end_time=None,  # End time not available yet during rendering
                     channel_name=None,
-                    view_layer_name=view_layer_name
+                    view_layer_name=view_layer_name,
+                    batch_start_time=self._batch_start_time,
+                    render_duration_seconds=None  # Will be calculated after render
                 )
             
             # Get file extension from render settings
@@ -881,7 +995,47 @@ class RENDER_OT_specific_frames(Operator):
             
             # Render the frame
             print(f"Starting render of frame {frame_num} - {channel_name}...")
+            from datetime import datetime
+            render_start = datetime.now()
             bpy.ops.render.render(write_still=True)
+            render_end = datetime.now()
+            render_duration = (render_end - render_start).total_seconds()
+            
+            # If filename pattern contains (RenderDurationSeconds), regenerate filename with actual duration
+            if "(RenderDurationSeconds)" in filename_pattern:
+                # Regenerate filename with render duration
+                if "(Channel)" in filename_pattern or len(self._selected_channels) > 1:
+                    filename = generate_filename_from_pattern(
+                        filename_pattern,
+                        self._blend_filename,
+                        camera_name,
+                        frame_num,
+                        start_time=self._render_start_time,
+                        end_time=render_end,
+                        channel_name=channel_name,
+                        view_layer_name=view_layer_name,
+                        batch_start_time=self._batch_start_time,
+                        render_duration_seconds=render_duration
+                    )
+                else:
+                    filename = generate_filename_from_pattern(
+                        filename_pattern,
+                        self._blend_filename,
+                        camera_name,
+                        frame_num,
+                        start_time=self._render_start_time,
+                        end_time=render_end,
+                        channel_name=None,
+                        view_layer_name=view_layer_name,
+                        batch_start_time=self._batch_start_time,
+                        render_duration_seconds=render_duration
+                    )
+                
+                # Update paths with new filename
+                full_output_path = os.path.join(self._output_folder, filename + extension)
+                self._last_saved_path = full_output_path
+                
+                print(f"✓ Render duration: {render_duration:.2f} seconds")
             
             # Check if the file was created - check multiple possible paths
             file_created = False
@@ -1142,6 +1296,7 @@ class RENDER_OT_specific_frames(Operator):
             # Record render start time for filename patterns
             from datetime import datetime
             self._render_start_time = datetime.now()
+            self._batch_start_time = self._render_start_time  # Batch start is same as first render start
             
             # Start modal operation with timer
             wm = context.window_manager
@@ -1289,10 +1444,13 @@ class RENDER_OT_current_frame(Operator):
 
             # Render and save each channel
             from datetime import datetime
-            render_time = datetime.now()
+            batch_start_time = datetime.now()  # For current frame, batch start is when user clicks render
             saved_paths = []
 
             for channel_name, pass_name in selected_channels:
+                # Record start time for this render
+                render_start = datetime.now()
+                
                 # Generate filename for this channel - only use channel name if pattern contains (Channel) token
                 if "(Channel)" in filename_pattern or len(selected_channels) > 1:
                     # Use channel name in filename
@@ -1301,10 +1459,12 @@ class RENDER_OT_current_frame(Operator):
                         blend_name,
                         camera_name,
                         frame_num,
-                        start_time=render_time,
-                        end_time=render_time,
+                        start_time=render_start,
+                        end_time=None,  # Will be updated after render if needed
                         channel_name=channel_name,
-                        view_layer_name=view_layer_name
+                        view_layer_name=view_layer_name,
+                        batch_start_time=batch_start_time,
+                        render_duration_seconds=None  # Will be calculated after render
                     )
                 else:
                     # Don't use channel name - for single Combined pass without (Channel) token
@@ -1313,10 +1473,12 @@ class RENDER_OT_current_frame(Operator):
                         blend_name,
                         camera_name,
                         frame_num,
-                        start_time=render_time,
-                        end_time=render_time,
+                        start_time=render_start,
+                        end_time=None,  # Will be updated after render if needed
                         channel_name=None,  # This will default to "Combined" but won't be used
-                        view_layer_name=view_layer_name
+                        view_layer_name=view_layer_name,
+                        batch_start_time=batch_start_time,
+                        render_duration_seconds=None  # Will be calculated after render
                     )
                 
                 full_output_path = os.path.join(output_folder, filename + extension)
@@ -1329,8 +1491,45 @@ class RENDER_OT_current_frame(Operator):
                 render.filepath = filepath_without_ext
                 render.use_file_extension = True
                 
-                # Render
+                # Render and measure duration
+                render_actual_start = datetime.now()
                 bpy.ops.render.render(write_still=True)
+                render_end = datetime.now()
+                render_duration = (render_end - render_actual_start).total_seconds()
+                
+                # If filename pattern contains (RenderDurationSeconds), regenerate filename with actual duration
+                if "(RenderDurationSeconds)" in filename_pattern:
+                    # Regenerate filename with render duration
+                    if "(Channel)" in filename_pattern or len(selected_channels) > 1:
+                        filename = generate_filename_from_pattern(
+                            filename_pattern,
+                            blend_name,
+                            camera_name,
+                            frame_num,
+                            start_time=render_start,
+                            end_time=render_end,
+                            channel_name=channel_name,
+                            view_layer_name=view_layer_name,
+                            batch_start_time=batch_start_time,
+                            render_duration_seconds=render_duration
+                        )
+                    else:
+                        filename = generate_filename_from_pattern(
+                            filename_pattern,
+                            blend_name,
+                            camera_name,
+                            frame_num,
+                            start_time=render_start,
+                            end_time=render_end,
+                            channel_name=None,
+                            view_layer_name=view_layer_name,
+                            batch_start_time=batch_start_time,
+                            render_duration_seconds=render_duration
+                        )
+                    
+                    # Update paths with new filename
+                    full_output_path = os.path.join(output_folder, filename + extension)
+                    print(f"✓ Render duration: {render_duration:.2f} seconds")
 
                 # Blender automatically saves the file, check multiple possible paths
                 possible_paths = [
@@ -1574,11 +1773,48 @@ class RENDER_OT_open_output_folder(Operator):
             return {'CANCELLED'}
 
 
+class RENDER_OT_set_viewport_focal_length(Operator):
+    """Change the 3D viewport focal length"""
+    bl_idname = "render.set_viewport_focal_length"
+    bl_label = "Set Viewport Focal Length"
+    bl_description = "Change the focal length of the 3D viewport"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    focal_length: EnumProperty(
+        name="Focal Length",
+        description="Select viewport focal length in mm",
+        items=[
+            ('12', "12mm", "Ultra wide angle"),
+            ('16', "16mm", "Wide angle"),
+            ('24', "24mm", "Wide angle"),
+            ('28', "28mm", "Wide angle"),
+            ('35', "35mm", "Standard wide"),
+            ('50', "50mm", "Standard"),
+            ('70', "70mm", "Portrait"),
+            ('85', "85mm", "Portrait"),
+            ('135', "135mm", "Telephoto"),
+            ('200', "200mm", "Telephoto"),
+        ],
+        default='50'
+    )
+    
+    def execute(self, context):
+        space = get_active_3d_view()
+        if space:
+            focal_value = float(self.focal_length)
+            space.lens = focal_value
+            self.report({'INFO'}, f"Viewport focal length set to {focal_value}mm")
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, "No 3D viewport found")
+            return {'CANCELLED'}
+
+
 class RENDER_OT_suggest_keyframes(Operator):
     """Scan the dope sheet and suggest frames with keyframes"""
     bl_idname = "render.suggest_keyframes"
     bl_label = "Suggest Keyframes"
-    bl_description = "Scan all objects' keyframes in the dope sheet and populate the frame numbers field"
+    bl_description = "Scan objects' keyframes and populate the frame numbers field"
     bl_options = {'REGISTER', 'UNDO'}
     
     # Property to receive current frame list from the render operator
@@ -1586,6 +1822,13 @@ class RENDER_OT_suggest_keyframes(Operator):
         name="Current Frames",
         description="Current frame list to respect min/max values",
         default=""
+    )
+    
+    # Property to control whether to scan only selected objects
+    selected_only: BoolProperty(
+        name="Selected Objects Only",
+        description="Scan keyframes from selected objects only (faster and more accurate)",
+        default=False
     )
     
     def execute(self, context):
@@ -1635,6 +1878,76 @@ class RENDER_OT_suggest_keyframes(Operator):
         try:
             keyframes = set()
             
+            # Helper function to iterate FCurves from action with slot support (Blender 5.0)
+            def iter_slot_fcurves(action, slot):
+                """Yield all FCurves in this action that belong to the given slot."""
+                if not action:
+                    return
+
+                # Layered actions path (5.0+)
+                if hasattr(action, "layers"):
+                    for layer in action.layers:
+                        for strip in layer.strips:
+                            # Only keyframe strips store fcurves
+                            if strip.type != 'KEYFRAME':
+                                continue
+
+                            # If slot is provided, get channelbag for this slot
+                            if slot:
+                                try:
+                                    cb = strip.channelbag(slot, ensure=False)
+                                    if cb:
+                                        for fc in cb.fcurves:
+                                            yield fc
+                                except Exception:
+                                    # Fallback: iterate all channelbags on the strip and match by slot
+                                    for bag in strip.channelbags:
+                                        if bag.slot == slot:
+                                            for fc in bag.fcurves:
+                                                yield fc
+                            else:
+                                # No slot provided, iterate all channelbags
+                                for bag in strip.channelbags:
+                                    for fc in bag.fcurves:
+                                        yield fc
+
+                # Legacy fallback (Blender 4.x and earlier)
+                else:
+                    fcurves = getattr(action, "fcurves", [])
+                    for fc in fcurves:
+                        yield fc
+
+            # Helper function to get keyframes from action (Blender 4.x and 5.0)
+            def get_keyframes_from_action(action, obj=None):
+                """Extract keyframe frame numbers from an action, handling both Blender 4.x and 5.0"""
+                frames = set()
+                
+                # Get the slot for this object if available (Blender 5.0)
+                slot = None
+                if obj and hasattr(obj, 'animation_data'):
+                    slot = getattr(obj.animation_data, "action_slot", None)
+                
+                # Use the slot-aware iterator to get fcurves
+                try:
+                    fcurve_count = 0
+                    for fcurve in iter_slot_fcurves(action, slot):
+                        fcurve_count += 1
+                        for keyframe_point in fcurve.keyframe_points:
+                            # Use co.x for Blender 5.0 compatibility, fall back to co[0]
+                            try:
+                                frame = round(keyframe_point.co.x)
+                            except AttributeError:
+                                frame = int(keyframe_point.co[0])
+                            frames.add(frame)
+                    
+                    if fcurve_count > 0:
+                        print(f"    Found {fcurve_count} fcurves with {len(frames)} unique keyframes")
+                        return frames
+                except Exception as e:
+                    print(f"    Error accessing fcurves: {e}")
+                
+                return frames
+            
             # Collect keyframes from all objects in the scene
             def collect_keyframes_from_object(obj):
                 """Recursively collect all keyframes from an object's animation data"""
@@ -1643,21 +1956,17 @@ class RENDER_OT_suggest_keyframes(Operator):
                 # Check if object has animation data
                 if obj.animation_data and obj.animation_data.action:
                     action = obj.animation_data.action
-                    # Iterate through all fcurves in the action
-                    for fcurve in action.fcurves:
-                        # Get all keyframe points
-                        for keyframe_point in fcurve.keyframe_points:
-                            frame = int(keyframe_point.co[0])
-                            frames.add(frame)
+                    print(f"  Checking object '{obj.name}' with action '{action.name}'")
+                    obj_frames = get_keyframes_from_action(action, obj)
+                    frames.update(obj_frames)
                 
                 # Check object data animation (e.g., shape keys, mesh animation)
                 if hasattr(obj, 'data') and obj.data and hasattr(obj.data, 'animation_data') and obj.data.animation_data:
                     if obj.data.animation_data.action:
                         action = obj.data.animation_data.action
-                        for fcurve in action.fcurves:
-                            for keyframe_point in fcurve.keyframe_points:
-                                frame = int(keyframe_point.co[0])
-                                frames.add(frame)
+                        print(f"  Checking object data '{obj.name}.data' with action '{action.name}'")
+                        obj_frames = get_keyframes_from_action(action, obj.data)
+                        frames.update(obj_frames)
                 
                 # Check material animation
                 if hasattr(obj, 'material_slots'):
@@ -1665,16 +1974,27 @@ class RENDER_OT_suggest_keyframes(Operator):
                         if mat_slot.material and mat_slot.material.animation_data:
                             if mat_slot.material.animation_data.action:
                                 action = mat_slot.material.animation_data.action
-                                for fcurve in action.fcurves:
-                                    for keyframe_point in fcurve.keyframe_points:
-                                        frame = int(keyframe_point.co[0])
-                                        frames.add(frame)
+                                print(f"  Checking material '{mat_slot.material.name}' with action '{action.name}'")
+                                mat_frames = get_keyframes_from_action(action, mat_slot.material)
+                                frames.update(mat_frames)
                 
                 return frames
             
-            # Collect keyframes from all objects
+            # Collect keyframes from objects
             object_keyframes = {}
-            for obj in scene.objects:
+            
+            # Determine which objects to scan
+            if self.selected_only:
+                objects_to_scan = [obj for obj in context.selected_objects]
+                if not objects_to_scan:
+                    self.report({'WARNING'}, "No objects selected. Please select objects or uncheck 'Selected Objects Only'.")
+                    return {'CANCELLED'}
+                print(f"Scanning {len(objects_to_scan)} selected objects for keyframes...")
+            else:
+                objects_to_scan = scene.objects
+                print(f"Scanning all {len(objects_to_scan)} objects in scene for keyframes...")
+            
+            for obj in objects_to_scan:
                 obj_frames = collect_keyframes_from_object(obj)
                 if obj_frames:
                     object_keyframes[obj.name] = sorted(list(obj_frames))
@@ -1683,18 +2003,16 @@ class RENDER_OT_suggest_keyframes(Operator):
             # Also check scene animation data (world, scene properties, etc.)
             if scene.animation_data and scene.animation_data.action:
                 action = scene.animation_data.action
-                for fcurve in action.fcurves:
-                    for keyframe_point in fcurve.keyframe_points:
-                        frame = int(keyframe_point.co[0])
-                        keyframes.add(frame)
+                print(f"  Checking scene animation with action '{action.name}'")
+                scene_frames = get_keyframes_from_action(action, scene)
+                keyframes.update(scene_frames)
             
             # Check world animation
             if scene.world and scene.world.animation_data and scene.world.animation_data.action:
                 action = scene.world.animation_data.action
-                for fcurve in action.fcurves:
-                    for keyframe_point in fcurve.keyframe_points:
-                        frame = int(keyframe_point.co[0])
-                        keyframes.add(frame)
+                print(f"  Checking world animation with action '{action.name}'")
+                world_frames = get_keyframes_from_action(action, scene.world)
+                keyframes.update(world_frames)
             
             # Filter keyframes based on existing frame range or scene frame range
             if frame_range_min is not None and frame_range_max is not None:
@@ -1731,17 +2049,48 @@ class RENDER_OT_suggest_keyframes(Operator):
                 bpy.types.WindowManager.suggested_keyframes = keyframe_string
                 
                 range_info = f" (limited to range {frame_start}-{frame_end})" if filter_source == "existing frame list" else ""
-                self.report({'INFO'}, f"Found {len(sorted_keyframes)} keyframes from {len(object_keyframes)} objects{range_info}: {keyframe_string[:80]}{'...' if len(keyframe_string) > 80 else ''}")
+                source_info = "selected objects" if self.selected_only else f"{len(object_keyframes)} objects"
+                self.report({'INFO'}, f"Found {len(sorted_keyframes)} keyframes from {source_info}{range_info}: {keyframe_string[:80]}{'...' if len(keyframe_string) > 80 else ''}")
                 
                 return {'FINISHED'}
             else:
                 range_info = f" in range {frame_start}-{frame_end}" if filter_source == "existing frame list" else ""
-                self.report({'WARNING'}, f"No keyframes found{range_info}")
+                source_info = "selected objects" if self.selected_only else "scene"
+                self.report({'WARNING'}, f"No keyframes found in {source_info}{range_info}")
                 return {'CANCELLED'}
         
         finally:
             # Restore original frame
             scene.frame_set(original_frame)
+    
+    def invoke(self, context, event):
+        # Check if holding Shift key - if so, show options dialog
+        if event.shift:
+            return context.window_manager.invoke_props_dialog(self, width=400)
+        else:
+            # Quick execution without dialog
+            return self.execute(context)
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Keyframe Detection Options:", icon='SETTINGS')
+        layout.separator()
+        
+        layout.prop(self, "selected_only")
+        
+        layout.separator()
+        box = layout.box()
+        box.label(text="Quick Access:", icon='INFO')
+        box.label(text="• Click icon = Scan all objects")
+        box.label(text="• Shift+Click = Show this dialog")
+        
+        if self.selected_only:
+            layout.separator()
+            selected_count = len(context.selected_objects)
+            if selected_count > 0:
+                layout.label(text=f"Will scan {selected_count} selected object(s)", icon='CHECKMARK')
+            else:
+                layout.label(text="⚠ No objects selected!", icon='ERROR')
 
 
 class RENDER_PT_specific_frames_panel(Panel):
@@ -1864,6 +2213,20 @@ class RENDER_PT_specific_frames_panel(Panel):
         layout.operator("render.current_frame", text="Render Current Frame", icon='RENDER_STILL')
         layout.operator("render.open_output_folder", text="Open Rendered Frame Result", icon='IMAGE_DATA')
 
+        # Viewport Settings section
+        layout.separator()
+        col = layout.column(align=True)
+        col.label(text="Viewport Settings:", icon='VIEW3D')
+        
+        # Get current viewport focal length
+        current_space = get_active_3d_view()
+        if current_space:
+            current_lens = current_space.lens
+            col.label(text=f"Current Focal Length: {current_lens:.1f}mm", icon='CAMERA_DATA')
+        
+        # Dropdown menu for focal length
+        col.operator_menu_enum("render.set_viewport_focal_length", "focal_length", text="Set Viewport Focal Length", icon='OUTLINER_OB_CAMERA')
+
         # Tips section with toggle button
         layout.separator()
         row = layout.row()
@@ -1901,6 +2264,7 @@ def register():
     bpy.utils.register_class(RENDER_OT_specific_frames)
     bpy.utils.register_class(RENDER_OT_current_frame)
     bpy.utils.register_class(RENDER_OT_open_output_folder)
+    bpy.utils.register_class(RENDER_OT_set_viewport_focal_length)
     bpy.utils.register_class(RENDER_OT_suggest_keyframes)
     bpy.utils.register_class(RENDER_PT_specific_frames_panel)
     
@@ -1933,6 +2297,7 @@ def unregister():
     bpy.utils.unregister_class(RENDER_OT_specific_frames)
     bpy.utils.unregister_class(RENDER_OT_current_frame)
     bpy.utils.unregister_class(RENDER_OT_open_output_folder)
+    bpy.utils.unregister_class(RENDER_OT_set_viewport_focal_length)
     bpy.utils.unregister_class(RENDER_OT_suggest_keyframes)
     bpy.utils.unregister_class(RENDER_PT_specific_frames_panel)
 
