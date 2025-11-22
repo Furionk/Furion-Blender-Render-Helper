@@ -859,13 +859,6 @@ class RENDER_OT_specific_frames(Operator):
     bl_description = "Furion Render Helper entered by user (comma separated)"
     bl_options = {'REGISTER', 'UNDO'}
     
-    # Property to store frame numbers input
-    frame_list: StringProperty(
-        name="Frame Numbers",
-        description="Enter frame numbers separated by commas (e.g., 1,5,10,25) or ranges (e.g., 1-5,10-15)",
-        default=""
-    )
-    
     # Internal properties for modal operation
     _timer = None
     _frame_numbers = []
@@ -1166,7 +1159,7 @@ class RENDER_OT_specific_frames(Operator):
         global output_folder_path
         # Parse the frame list
         try:
-            frame_string = self.frame_list.strip()
+            frame_string = context.scene.frh_frame_list.strip()
             if not frame_string:
                 self.report({'ERROR'}, "Please enter frame numbers")
                 return {'CANCELLED'}
@@ -1321,7 +1314,7 @@ class RENDER_OT_specific_frames(Operator):
         if hasattr(bpy.types.WindowManager, 'suggested_keyframes'):
             suggested = bpy.types.WindowManager.suggested_keyframes
             if suggested:
-                self.frame_list = suggested
+                context.scene.frh_frame_list = suggested
             # Clear the suggestion after applying
             delattr(bpy.types.WindowManager, 'suggested_keyframes')
         
@@ -1337,11 +1330,11 @@ class RENDER_OT_specific_frames(Operator):
         # Frame numbers input section with suggestion button
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.prop(self, "frame_list", text="Frame Numbers")
+        row.prop(context.scene, "frh_frame_list", text="Frame Numbers")
         
         # Suggest Keyframes button - pass current frame_list to the operator
         suggest_op = row.operator("render.suggest_keyframes", text="", icon='KEYFRAME_HLT')
-        suggest_op.current_frames = self.frame_list
+        suggest_op.current_frames = context.scene.frh_frame_list
         
         col.label(text="Enter frame numbers separated by commas")
         col.label(text="Examples: 1,5,10,25 or 1-5,10-15,30")
@@ -2275,6 +2268,12 @@ def register():
         default=False
     )
     
+    bpy.types.Scene.frh_frame_list = StringProperty(
+        name="Frame Numbers",
+        description="Enter frame numbers separated by commas (e.g., 1,5,10,25) or ranges (e.g., 1-5,10-15)",
+        default=""
+    )
+    
     # Add handler to reload output folder when file is loaded
     bpy.app.handlers.load_post.append(on_file_load)
     
@@ -2289,6 +2288,7 @@ def unregister():
     
     # Unregister scene properties
     del bpy.types.Scene.frh_show_tips
+    del bpy.types.Scene.frh_frame_list
     
     bpy.utils.unregister_class(FurionRenderHelperPreferences)
     bpy.utils.unregister_class(RENDER_OT_set_output_folder)
