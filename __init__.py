@@ -1310,14 +1310,6 @@ class RENDER_OT_specific_frames(Operator):
         global output_folder_path
         layout = self.layout
         
-        # Check if we have suggested keyframes to apply
-        if hasattr(bpy.types.WindowManager, 'suggested_keyframes'):
-            suggested = bpy.types.WindowManager.suggested_keyframes
-            if suggested:
-                context.scene.frh_frame_list = suggested
-            # Clear the suggestion after applying
-            delattr(bpy.types.WindowManager, 'suggested_keyframes')
-        
         # Show current output folder
         box = layout.box()
         if output_folder_path:
@@ -1915,29 +1907,53 @@ class RENDER_OT_suggest_keyframes(Operator):
                 """Extract keyframe frame numbers from an action, handling both Blender 4.x and 5.0"""
                 frames = set()
                 
-                # Get the slot for this object if available (Blender 5.0)
-                slot = None
-                if obj and hasattr(obj, 'animation_data'):
-                    slot = getattr(obj.animation_data, "action_slot", None)
+                # Try Blender 4.x style first - direct fcurves access
+                if hasattr(action, 'fcurves') and not callable(action.fcurves):
+                    try:
+                        fcurve_count = len(action.fcurves)
+                        if fcurve_count > 0:
+                            print(f"    Found {fcurve_count} fcurves (Blender 4.x style)")
+                            for fcurve in action.fcurves:
+                                for keyframe_point in fcurve.keyframe_points:
+                                    try:
+                                        # Try co.x first (newer style)
+                                        frame = round(keyframe_point.co.x)
+                                    except AttributeError:
+                                        # Fall back to co[0] (older style)
+                                        frame = int(keyframe_point.co[0])
+                                    frames.add(frame)
+                            if frames:
+                                print(f"    Extracted {len(frames)} unique keyframes from fcurves")
+                                return frames
+                    except Exception as e:
+                        print(f"    Failed to access fcurves directly: {e}")
                 
-                # Use the slot-aware iterator to get fcurves
-                try:
-                    fcurve_count = 0
-                    for fcurve in iter_slot_fcurves(action, slot):
-                        fcurve_count += 1
-                        for keyframe_point in fcurve.keyframe_points:
-                            # Use co.x for Blender 5.0 compatibility, fall back to co[0]
-                            try:
-                                frame = round(keyframe_point.co.x)
-                            except AttributeError:
-                                frame = int(keyframe_point.co[0])
-                            frames.add(frame)
+                # Try Blender 5.0 layered animation system with slots
+                if hasattr(action, "layers"):
+                    print(f"    Detected Blender 5.0 layered animation system")
                     
-                    if fcurve_count > 0:
-                        print(f"    Found {fcurve_count} fcurves with {len(frames)} unique keyframes")
-                        return frames
-                except Exception as e:
-                    print(f"    Error accessing fcurves: {e}")
+                    # Get the slot for this object if available (Blender 5.0)
+                    slot = None
+                    if obj and hasattr(obj, 'animation_data'):
+                        slot = getattr(obj.animation_data, "action_slot", None)
+                    
+                    # Use the slot-aware iterator to get fcurves
+                    try:
+                        fcurve_count = 0
+                        for fcurve in iter_slot_fcurves(action, slot):
+                            fcurve_count += 1
+                            for keyframe_point in fcurve.keyframe_points:
+                                try:
+                                    frame = round(keyframe_point.co.x)
+                                except AttributeError:
+                                    frame = int(keyframe_point.co[0])
+                                frames.add(frame)
+                        
+                        if fcurve_count > 0:
+                            print(f"    Found {fcurve_count} fcurves with {len(frames)} unique keyframes")
+                            return frames
+                    except Exception as e:
+                        print(f"    Error accessing fcurves via slots: {e}")
                 
                 return frames
             
@@ -2038,8 +2054,8 @@ class RENDER_OT_suggest_keyframes(Operator):
                 sorted_keyframes = sorted(list(filtered_keyframes))
                 keyframe_string = ','.join(map(str, sorted_keyframes))
                 
-                # Store keyframes in the window manager to persist across operator calls
-                bpy.types.WindowManager.suggested_keyframes = keyframe_string
+                # Store keyframes directly in the scene property
+                scene.frh_frame_list = keyframe_string
                 
                 range_info = f" (limited to range {frame_start}-{frame_end})" if filter_source == "existing frame list" else ""
                 source_info = "selected objects" if self.selected_only else f"{len(object_keyframes)} objects"

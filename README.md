@@ -1,14 +1,19 @@
 # Furion Render Helper
 
-This is just a blender plugin for me to batch render with multi-channel output and customizable filename patterns. 
+This is just a blender plugin for me to batch render with multi-channel output and customizable filename patterns.
+
+## Version 1.4.3 (November 22, 2025)
+- ✅ **Blender 5.0 Support** - Full compatibility with Blender 5.0's new layered animation system for keyframe detection
+- ✅ **Backward Compatible** - Maintains support for Blender 4.x direct fcurves access
+- ✅ **Persistent Frame List** - Frame numbers now persist across sessions (saved in scene data)
+- 🔧 Fixed keyframe suggestion display issue 
 
 ![image](https://github.com/Furionk/FurionRenderHelper/blob/main/furion_render_helper.png)
 
 ## Key Features
 
 - 🎯 **Batch Frame Rendering** - Batch render by typing frame ranges (e.g., `1,5,10-15,30`)
-- 🔑 **Smart Keyframe Detection** - Auto-suggest keyframes for blocking stage renders. Intelligently extracts keyframes from the Dope Sheet Summary timeline, skipping interpolated frames. Respects your frame range: if you type `1-100`, only keyframes between 1 and 100 are included (keyframes at 100+ are filtered out). Perfect for reviewing animation blocking without rendering unnecessary in-between frames. 
-This feature intelligently extracts keyframes from the Dope Sheet Summary timeline, making it ideal for reviewing animation blocking without rendering interpolated frames.
+- 🔑 **Smart Keyframe Detection** - Auto-suggest keyframes for blocking stage renders. Supports both Blender 4.x and 5.0 animation systems. Intelligently extracts keyframes from the Dope Sheet, skipping interpolated frames. Respects your frame range: if you type `1-100`, only keyframes between 1 and 100 are included (keyframes at 100+ are filtered out). Frame numbers persist across sessions. Perfect for reviewing animation blocking without rendering unnecessary in-between frames.
 
 
 - 🎨 **Multi-Channel Output** - Render multiple passes (Combined, Depth, Mist, Normal, etc.) in a single batch
@@ -95,7 +100,7 @@ Choose where to store your output folder path in **Preferences > Add-ons > Furio
 
 ## Requirements
 
-- Blender 4.0+
+- Blender 4.2+ (tested with 4.x and 5.0)
 - Supports Windows, macOS, Linux
 
 ## Location

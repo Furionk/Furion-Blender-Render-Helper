@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "furion_render_helper"
-version = "1.4.2"
+version = "1.4.3"
 name = "Furion Render Helper"
 tagline = "Manage blender frame rendering with multi-channel output and filename patterns"
 maintainer = "Furion Mashiou <furionkyo@gmail.com>"
