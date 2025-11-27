@@ -60,6 +60,12 @@ class FurionRenderHelperPreferences(AddonPreferences):
         update=lambda self, context: load_output_folder_from_source(context)
     )
     
+    enable_camera_helpers: BoolProperty(
+        name="Enable Camera Helper Functions",
+        description="Enable additional camera helper functions in context menus",
+        default=False
+    )
+    
     def draw(self, context):
         layout = self.layout
         
@@ -78,6 +84,16 @@ class FurionRenderHelperPreferences(AddonPreferences):
         col.label(text="")
         col.label(text="• Scene Properties: Per-project setting stored in blend file")
         col.label(text="  Different output folder for each blend file")
+        
+        # Camera Helper Functions
+        layout.separator()
+        camera_box = layout.box()
+        camera_box.label(text="Camera Helper Functions:", icon='OUTLINER_OB_CAMERA')
+        camera_box.prop(self, "enable_camera_helpers", text="Enable Camera Helpers")
+        
+        if self.enable_camera_helpers:
+            info_col = camera_box.column(align=True)
+            info_col.label(text="Adds DOF Distance picker to camera context menu", icon='INFO')
         
         # Show current settings
         layout.separator()
@@ -1795,6 +1811,180 @@ class RENDER_OT_set_viewport_focal_length(Operator):
             return {'CANCELLED'}
 
 
+class CAMERA_OT_dof_distance_pick(Operator):
+    """Pick DOF focus distance using eyedropper"""
+    bl_idname = "camera.dof_distance_pick"
+    bl_label = "DOF Distance (Pick) New"
+    bl_description = "Pick focus distance from 3D viewport using eyedropper"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    _timer = None
+    _camera = None
+    _initial_distance = None
+    
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            # Check if the DOF distance has changed
+            if self._camera and self._camera.data.dof.focus_distance != self._initial_distance:
+                # Distance was changed by eyedropper, check if we should keyframe
+                if context.scene.frh_camera_keyframe:
+                    # Add keyframe on dof.focus_distance
+                    self._camera.data.dof.keyframe_insert(data_path="focus_distance")
+                    self.report({'INFO'}, f"DOF distance set and keyframed at frame {context.scene.frame_current}")
+                else:
+                    self.report({'INFO'}, f"DOF distance set to {self._camera.data.dof.focus_distance:.2f}")
+                
+                # Clean up and finish
+                self.cancel(context)
+                return {'FINISHED'}
+        
+        # Check if eyedropper was cancelled
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self.cancel(context)
+            return {'CANCELLED'}
+        
+        return {'PASS_THROUGH'}
+    
+    def cancel(self, context):
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+    
+    def execute(self, context):
+        # Get active camera
+        camera = context.scene.camera
+        if not camera or camera.type != 'CAMERA':
+            self.report({'ERROR'}, "No active camera in scene")
+            return {'CANCELLED'}
+        
+        # Store camera and initial distance
+        self._camera = camera
+        self._initial_distance = camera.data.dof.focus_distance
+        
+        # Add timer for modal operation
+        self._timer = context.window_manager.event_timer_add(0.1, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        
+        # Invoke the depth eyedropper
+        bpy.ops.ui.eyedropper_depth('INVOKE_DEFAULT')
+        
+        return {'RUNNING_MODAL'}
+
+
+class CAMERA_OT_focal_length_adjust(Operator):
+    """Adjust camera focal length with mouse"""
+    bl_idname = "camera.focal_length_adjust"
+    bl_label = "Camera Focal Length"
+    bl_description = "Adjust camera focal length interactively with mouse (photographer.focal)"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    _initial_mouse_x = None
+    _initial_focal = None
+    _camera = None
+    
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            # Calculate the delta from initial mouse position
+            delta = (event.mouse_x - self._initial_mouse_x) * 0.1
+            
+            # Update focal length
+            new_focal = max(1.0, self._initial_focal + delta)
+            
+            # Update photographer.focal property
+            if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'focal'):
+                self._camera.data.photographer.focal = new_focal
+            else:
+                # Fallback to data.lens if photographer addon not available
+                self._camera.data.lens = new_focal
+            
+            # Update header text
+            context.area.header_text_set(f"Camera Focal Length: {new_focal:.1f}mm")
+            
+            return {'RUNNING_MODAL'}
+        
+        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            # Confirm and finish
+            context.area.header_text_set(None)
+            
+            # Add keyframe if toggle is on
+            if context.scene.frh_camera_keyframe:
+                if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'focal'):
+                    self._camera.data.photographer.keyframe_insert(data_path="focal")
+                else:
+                    self._camera.data.keyframe_insert(data_path="lens")
+            
+            return {'FINISHED'}
+        
+        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+            # Cancel and restore original value
+            if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'focal'):
+                self._camera.data.photographer.focal = self._initial_focal
+            else:
+                self._camera.data.lens = self._initial_focal
+            
+            context.area.header_text_set(None)
+            return {'CANCELLED'}
+        
+        return {'RUNNING_MODAL'}
+    
+    def invoke(self, context, event):
+        # Get active camera
+        camera = context.scene.camera
+        if not camera or camera.type != 'CAMERA':
+            self.report({'ERROR'}, "No active camera in scene")
+            return {'CANCELLED'}
+        
+        self._camera = camera
+        self._initial_mouse_x = event.mouse_x
+        
+        # Get initial focal length from photographer.focal or data.lens
+        if hasattr(camera.data, 'photographer') and hasattr(camera.data.photographer, 'focal'):
+            self._initial_focal = camera.data.photographer.focal
+        else:
+            self._initial_focal = camera.data.lens
+        
+        # Add modal handler
+        context.window_manager.modal_handler_add(self)
+        
+        # Set initial header text
+        context.area.header_text_set(f"Camera Focal Length: {self._initial_focal:.1f}mm")
+        
+        return {'RUNNING_MODAL'}
+
+
+class VIEW3D_MT_camera_dof_menu(bpy.types.Menu):
+    """Camera DOF helper menu"""
+    bl_label = "DOF Distance"
+    bl_idname = "VIEW3D_MT_camera_dof_menu"
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("camera.dof_distance_pick", icon='EYEDROPPER')
+
+
+def camera_context_menu_draw(self, context):
+    """Draw function to add to camera context menu"""
+    prefs = get_addon_preferences()
+    if prefs and prefs.enable_camera_helpers:
+        layout = self.layout
+        layout.separator()
+        layout.operator("camera.focal_length_adjust", icon='OUTLINER_OB_CAMERA')
+        layout.operator("camera.dof_distance_pick", icon='EYEDROPPER')
+
+
+def viewport_header_draw(self, context):
+    """Draw function to add to 3D viewport header"""
+    prefs = get_addon_preferences()
+    if prefs and prefs.enable_camera_helpers:
+        # Only show if there's an active camera
+        if context.scene.camera and context.scene.camera.type == 'CAMERA':
+            layout = self.layout
+            layout.separator()
+            layout.operator("camera.focal_length_adjust", text="", icon='OUTLINER_OB_CAMERA')
+            layout.prop(context.scene, "frh_camera_keyframe", text="", icon='DECORATE_KEYFRAME', toggle=True)
+            layout.operator("camera.dof_distance_pick", text="", icon='EYEDROPPER')
+
+
 class RENDER_OT_suggest_keyframes(Operator):
     """Scan the dope sheet and suggest frames with keyframes"""
     bl_idname = "render.suggest_keyframes"
@@ -2274,8 +2464,17 @@ def register():
     bpy.utils.register_class(RENDER_OT_current_frame)
     bpy.utils.register_class(RENDER_OT_open_output_folder)
     bpy.utils.register_class(RENDER_OT_set_viewport_focal_length)
+    bpy.utils.register_class(CAMERA_OT_focal_length_adjust)
+    bpy.utils.register_class(CAMERA_OT_dof_distance_pick)
+    bpy.utils.register_class(VIEW3D_MT_camera_dof_menu)
     bpy.utils.register_class(RENDER_OT_suggest_keyframes)
     bpy.utils.register_class(RENDER_PT_specific_frames_panel)
+    
+    # Add camera context menu item
+    bpy.types.VIEW3D_MT_object_context_menu.append(camera_context_menu_draw)
+    
+    # Add viewport header button
+    bpy.types.VIEW3D_HT_header.append(viewport_header_draw)
     
     # Register scene properties
     bpy.types.Scene.frh_show_tips = BoolProperty(
@@ -2290,6 +2489,12 @@ def register():
         default=""
     )
     
+    bpy.types.Scene.frh_camera_keyframe = BoolProperty(
+        name="Add Camera Keyframe",
+        description="Automatically add keyframe when picking DOF distance",
+        default=False
+    )
+    
     # Add handler to reload output folder when file is loaded
     bpy.app.handlers.load_post.append(on_file_load)
     
@@ -2298,6 +2503,12 @@ def register():
 
 
 def unregister():
+    # Remove viewport header button
+    bpy.types.VIEW3D_HT_header.remove(viewport_header_draw)
+    
+    # Remove camera context menu item
+    bpy.types.VIEW3D_MT_object_context_menu.remove(camera_context_menu_draw)
+    
     # Remove handler
     if on_file_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_file_load)
@@ -2305,6 +2516,7 @@ def unregister():
     # Unregister scene properties
     del bpy.types.Scene.frh_show_tips
     del bpy.types.Scene.frh_frame_list
+    del bpy.types.Scene.frh_camera_keyframe
     
     bpy.utils.unregister_class(FurionRenderHelperPreferences)
     bpy.utils.unregister_class(RENDER_OT_set_output_folder)
@@ -2314,6 +2526,9 @@ def unregister():
     bpy.utils.unregister_class(RENDER_OT_current_frame)
     bpy.utils.unregister_class(RENDER_OT_open_output_folder)
     bpy.utils.unregister_class(RENDER_OT_set_viewport_focal_length)
+    bpy.utils.unregister_class(CAMERA_OT_focal_length_adjust)
+    bpy.utils.unregister_class(CAMERA_OT_dof_distance_pick)
+    bpy.utils.unregister_class(VIEW3D_MT_camera_dof_menu)
     bpy.utils.unregister_class(RENDER_OT_suggest_keyframes)
     bpy.utils.unregister_class(RENDER_PT_specific_frames_panel)
 
