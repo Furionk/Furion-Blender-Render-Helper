@@ -57,7 +57,7 @@ class FurionRenderHelperPreferences(AddonPreferences):
             ('SCENE_PROPS', "Scene Properties", "Read from current scene's custom properties (per-project settings, default)"),
         ],
         default='SCENE_PROPS',
-        update=lambda self, context: load_output_folder_from_source(context)
+        update=lambda self, context: (load_output_folder_from_source(context), load_filename_pattern_from_source(context))
     )
     
     enable_camera_helpers: BoolProperty(
@@ -273,24 +273,28 @@ def load_output_folder_from_source(context=None):
 def load_user_preferences():
     """Load user preferences including output folder and filename pattern"""
     global output_folder_path, filename_pattern
-    prefs_file = get_preferences_file()
-    try:
-        if os.path.exists(prefs_file):
-            with open(prefs_file, 'r') as f:
-                prefs = json.load(f)
-                
-                # Load filename pattern (always from user prefs)
-                saved_pattern = prefs.get('filename_pattern', '')
-                if saved_pattern:
-                    filename_pattern = saved_pattern
-                    print(f"Loaded filename pattern: {filename_pattern}")
-                else:
-                    print("Using default filename pattern")
-                
-                # Load output folder based on source setting
-                load_output_folder_from_source()
-    except Exception as e:
-        print(f"Could not load preferences: {e}")
+    
+    # Load based on source setting
+    source = get_output_path_source()
+    
+    print(f"Loading preferences from: {source}")
+    
+    if source == 'SCENE_PROPS':
+        # Try to load from scene first
+        try:
+            scene = bpy.context.scene
+            load_output_folder_from_scene(scene)
+            load_filename_pattern_from_scene(scene)
+        except:
+            # If scene loading fails, fall back to user prefs
+            print("Scene not available yet, loading from user prefs as fallback")
+            load_output_folder_from_user_prefs()
+            load_filename_pattern_from_user_prefs()
+    else:  # USER_PREFS
+        load_output_folder_from_user_prefs()
+        load_filename_pattern_from_user_prefs()
+    
+    print(f"Loaded - folder: {output_folder_path}, pattern: {filename_pattern}")
 
 def load_default_output_folder():
     """Legacy function - now handled by load_user_preferences"""
@@ -317,15 +321,20 @@ def save_user_preferences():
             prefs['default_output_folder'] = output_folder_path
             prefs['filename_pattern'] = filename_pattern
             print(f"Saving to user prefs - folder: {output_folder_path}, pattern: {filename_pattern}")
+            
+            # Save preferences file
+            with open(prefs_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
         else:  # SCENE_PROPS
             # Save to scene custom properties
             save_output_folder_to_scene()
             save_filename_pattern_to_scene()
             print(f"Saving to scene props - folder: {output_folder_path}, pattern: {filename_pattern}")
-        
-        # Save preferences file
-        with open(prefs_file, 'w') as f:
-            json.dump(prefs, f, indent=2)
+            
+            # Still save to user prefs file to maintain it (but scene props take priority)
+            prefs['filename_pattern'] = filename_pattern
+            with open(prefs_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
         
         print(f"Saved preferences")
     except Exception as e:
@@ -335,9 +344,6 @@ def save_default_output_folder():
     """Legacy function - now handled by save_user_preferences"""
     save_user_preferences()
 
-# Load user preferences on script load
-load_user_preferences()
-
 
 # Handler for when a blend file is loaded
 @bpy.app.handlers.persistent
@@ -345,6 +351,17 @@ def on_file_load(dummy):
     """Handler called when a blend file is loaded"""
     # Reload output folder and filename pattern based on current source setting
     load_output_folder_from_source()
+    
+    # Also load filename pattern explicitly
+    source = get_output_path_source()
+    if source == 'SCENE_PROPS':
+        try:
+            scene = bpy.context.scene
+            load_filename_pattern_from_scene(scene)
+        except:
+            pass
+    else:  # USER_PREFS
+        load_filename_pattern_from_user_prefs()
 
 
 def validate_channel_pattern(pattern, has_multiple_channels):
@@ -804,6 +821,16 @@ class RENDER_OT_set_filename_pattern(Operator):
     
     def invoke(self, context, event):
         global filename_pattern
+        # Load current pattern from the correct source before displaying
+        source = get_output_path_source()
+        if source == 'SCENE_PROPS':
+            try:
+                load_filename_pattern_from_scene(context.scene)
+            except:
+                pass
+        else:
+            load_filename_pattern_from_user_prefs()
+        
         self.pattern = filename_pattern
         return context.window_manager.invoke_props_dialog(self, width=500)
     
@@ -992,11 +1019,11 @@ class RENDER_OT_specific_frames(Operator):
             # Set up compositor for this specific pass if needed
             original_compositor_state = setup_compositor_for_pass(scene, channel_name, pass_name)
             
-            # Render the frame
+            # Render the frame (use blocking call within modal for proper sequencing)
             print(f"Starting render of frame {frame_num} - {channel_name}...")
             from datetime import datetime
             render_start = datetime.now()
-            bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
+            bpy.ops.render.render(write_still=True)
             render_end = datetime.now()
             render_duration = (render_end - render_start).total_seconds()
             
@@ -1449,7 +1476,7 @@ class RENDER_OT_current_frame(Operator):
             render.use_file_extension = True
             
             # Render once - this populates the render result with all passes
-            bpy.ops.render.render('INVOKE_DEFAULT', write_still=False)  # Don't write yet, we'll save passes individually
+            bpy.ops.render.render(write_still=False)  # Don't write yet, we'll save passes individually
             render_end = datetime.now()
             render_duration = (render_end - render_start).total_seconds()
             
