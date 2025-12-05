@@ -421,7 +421,7 @@ def get_selected_channels(scene):
 
 
 def save_render_pass(scene, channel_name, pass_name, filepath):
-    """Save a specific render pass to file by accessing render result data"""
+    """Save a specific render pass to file from the render result"""
     try:
         # Get the render result image
         render_result = bpy.data.images.get('Render Result')
@@ -429,95 +429,85 @@ def save_render_pass(scene, channel_name, pass_name, filepath):
             print(f"⚠️ No render result found for {channel_name}")
             return False
         
+        # For Combined pass, save directly
         if channel_name == 'Combined':
-            # Save the combined result directly
             render_result.save_render(filepath=filepath, scene=scene)
             return True
         
-        # For specific passes, access them from the render result's pass data
+        # For other passes, we need to use the compositor to extract them
+        # The render result contains all passes, but save_render() only saves the composite
+        # We'll use a temporary compositor setup to isolate and save each pass
+        
+        # Store original state
+        original_use_nodes = scene.use_nodes
+        temp_nodes_created = []
+        
         try:
-            # Map channel names to Blender's internal pass names
-            pass_name_mapping = {
-                'Depth': 'Z',
-                'Mist': 'Mist',
-                'Normal': 'Normal',
-                'DiffuseDir': 'DiffDir',
-                'GlossyDir': 'GlossDir',
-                'Emit': 'Emit'
+            # Enable compositor
+            scene.use_nodes = True
+            
+            # Create temporary nodes
+            render_layers = scene.node_tree.nodes.new('CompositorNodeRLayers')
+            render_layers.name = '_FRH_TempRL'
+            temp_nodes_created.append(render_layers)
+            
+            composite = scene.node_tree.nodes.new('CompositorNodeComposite')
+            composite.name = '_FRH_TempComp'
+            temp_nodes_created.append(composite)
+            
+            # Map channel names to Blender socket names
+            socket_map = {
+                'Depth': 'Depth', 'Mist': 'Mist', 'Normal': 'Normal',
+                'DiffuseDir': 'DiffDir', 'GlossyDir': 'GlossDir',
+                'Emit': 'Emit', 'DiffuseCol': 'DiffCol',
+                'GlossyCol': 'GlossCol', 'TransDir': 'TransDir',
+                'TransCol': 'TransCol', 'AO': 'AO',
+                'Shadow': 'Shadow', 'Environment': 'Env'
             }
             
-            blender_pass_name = pass_name_mapping.get(channel_name, channel_name)
+            socket_name = socket_map.get(channel_name, channel_name)
             
-            # Try to access the pass data directly from render result
-            # Check if the pass exists in render layers
-            if hasattr(render_result, 'render_layers') and render_result.render_layers:
-                render_layer = render_result.render_layers[0]
+            # Connect the pass to composite
+            if socket_name in render_layers.outputs:
+                scene.node_tree.links.new(
+                    render_layers.outputs[socket_name],
+                    composite.inputs['Image']
+                )
                 
-                # Look for the specific pass
-                pass_found = False
-                for render_pass in render_layer.passes:
-                    if render_pass.name == blender_pass_name or render_pass.name == channel_name:
-                        pass_found = True
-                        break
+                # Update the scene to apply compositor changes
+                scene.view_layers.update()
                 
-                if pass_found:
-                    # Create a temporary image for the pass
-                    temp_image_name = f"TempPass_{channel_name}"
-                    
-                    # Remove existing temp image if it exists
-                    if temp_image_name in bpy.data.images:
-                        bpy.data.images.remove(bpy.data.images[temp_image_name])
-                    
-                    # Create new image with same dimensions as render result
-                    temp_image = bpy.data.images.new(
-                        name=temp_image_name,
-                        width=render_result.size[0],
-                        height=render_result.size[1],
-                        alpha=True
-                    )
-                    
-                    # Copy the pass data to our temp image
-                    # Note: This is a simplified approach - actual pass extraction 
-                    # would require proper buffer manipulation
-                    temp_image.pixels = render_pass.rect[:]
-                    temp_image.filepath_raw = filepath
-                    temp_image.file_format = scene.render.image_settings.file_format
-                    temp_image.save()
-                    
-                    # Clean up temp image
-                    bpy.data.images.remove(temp_image)
-                    
-                    print(f"✓ Extracted and saved {channel_name} pass to: {filepath}")
-                    return True
+                # Now save the composited result
+                render_result.save_render(filepath=filepath, scene=scene)
+                print(f"✓ Saved {channel_name} pass")
+                
+            else:
+                print(f"⚠️ Pass {socket_name} not available, saving Combined instead")
+                render_result.save_render(filepath=filepath, scene=scene)
             
-            # If we couldn't extract the specific pass, fall back to a workaround
-            # Use the viewer node approach with minimal setup
-            return save_pass_via_viewer(scene, channel_name, blender_pass_name, filepath)
-                
-        except Exception as pass_error:
-            print(f"⚠️ Error extracting {channel_name} pass: {pass_error}")
-            # Fall back to combined pass
+            # Clean up temporary nodes
+            for node in temp_nodes_created:
+                scene.node_tree.nodes.remove(node)
+            
+            # Restore original state
+            scene.use_nodes = original_use_nodes
+            
+            return True
+            
+        except Exception as comp_error:
+            print(f"⚠️ Compositor error for {channel_name}: {comp_error}")
+            # Clean up
+            for node in temp_nodes_created:
+                if node.name in scene.node_tree.nodes:
+                    scene.node_tree.nodes.remove(node)
+            scene.use_nodes = original_use_nodes
+            # Fallback: save combined
             render_result.save_render(filepath=filepath, scene=scene)
-            print(f"⚠️ Saved combined pass instead of {channel_name}")
             return True
             
     except Exception as e:
-        print(f"❌ Error saving {channel_name} pass: {e}")
+        print(f"❌ Error saving {channel_name}: {e}")
         return False
-
-
-def save_pass_via_viewer(scene, channel_name, blender_pass_name, filepath):
-    """Alternative method to save pass using viewer node approach"""
-    try:
-        # This is a simplified fallback - for now just save combined
-        # In a full implementation, this would set up compositor nodes temporarily
-        render_result = bpy.data.images.get('Render Result')
-        if render_result:
-            render_result.save_render(filepath=filepath, scene=scene)
-            print(f"⚠️ {channel_name} pass saved as combined (proper pass extraction not yet implemented)")
-            return True
-        return False
-    except Exception as e:
         print(f"❌ Error in viewer fallback for {channel_name}: {e}")
         return False
 
@@ -1443,15 +1433,30 @@ class RENDER_OT_current_frame(Operator):
             print(f"🎭 Channels: {[ch[0] for ch in selected_channels]}")
             print("=" * 60 + "\n")
 
-            # Render and save each channel
+            # Render ONCE and save each channel from the result
             from datetime import datetime
             batch_start_time = datetime.now()  # For current frame, batch start is when user clicks render
             saved_paths = []
 
+            # Perform single render without compositor manipulation
+            render_start = datetime.now()
+            
+            # Set a temporary filepath for the initial render (won't actually save here)
+            temp_filename = f"_temp_render_{frame_num:04d}"
+            temp_filepath = os.path.join(output_folder, temp_filename)
+            original_write_still = render.filepath
+            render.filepath = temp_filepath
+            render.use_file_extension = True
+            
+            # Render once - this populates the render result with all passes
+            bpy.ops.render.render(write_still=False)  # Don't write yet, we'll save passes individually
+            render_end = datetime.now()
+            render_duration = (render_end - render_start).total_seconds()
+            
+            print(f"✓ Render completed in {render_duration:.2f} seconds")
+
+            # Now save each channel from the single render result
             for channel_name, pass_name in selected_channels:
-                # Record start time for this render
-                render_start = datetime.now()
-                
                 # Generate filename for this channel - only use channel name if pattern contains (Channel) token
                 if "(Channel)" in filename_pattern or len(selected_channels) > 1:
                     # Use channel name in filename
@@ -1461,11 +1466,11 @@ class RENDER_OT_current_frame(Operator):
                         camera_name,
                         frame_num,
                         start_time=render_start,
-                        end_time=None,  # Will be updated after render if needed
+                        end_time=render_end,
                         channel_name=channel_name,
                         view_layer_name=view_layer_name,
                         batch_start_time=batch_start_time,
-                        render_duration_seconds=None  # Will be calculated after render
+                        render_duration_seconds=render_duration
                     )
                 else:
                     # Don't use channel name - for single Combined pass without (Channel) token
@@ -1475,98 +1480,23 @@ class RENDER_OT_current_frame(Operator):
                         camera_name,
                         frame_num,
                         start_time=render_start,
-                        end_time=None,  # Will be updated after render if needed
+                        end_time=render_end,
                         channel_name=None,  # This will default to "Combined" but won't be used
                         view_layer_name=view_layer_name,
                         batch_start_time=batch_start_time,
-                        render_duration_seconds=None  # Will be calculated after render
+                        render_duration_seconds=render_duration
                     )
                 
                 full_output_path = os.path.join(output_folder, filename + extension)
 
-                # Set up compositor for this specific pass
-                original_compositor_state = setup_compositor_for_pass(scene, channel_name, pass_name)
+                # Save this specific pass from the render result (no re-rendering needed)
+                success = save_render_pass(scene, channel_name, pass_name, full_output_path)
                 
-                # Set filepath WITHOUT extension (Blender will add it)
-                filepath_without_ext = os.path.join(output_folder, filename)
-                render.filepath = filepath_without_ext
-                render.use_file_extension = True
-                
-                # Render and measure duration
-                render_actual_start = datetime.now()
-                bpy.ops.render.render(write_still=True)
-                render_end = datetime.now()
-                render_duration = (render_end - render_actual_start).total_seconds()
-                
-                # If filename pattern contains (RenderDurationSeconds), regenerate filename with actual duration
-                if "(RenderDurationSeconds)" in filename_pattern:
-                    # Regenerate filename with render duration
-                    if "(Channel)" in filename_pattern or len(selected_channels) > 1:
-                        filename = generate_filename_from_pattern(
-                            filename_pattern,
-                            blend_name,
-                            camera_name,
-                            frame_num,
-                            start_time=render_start,
-                            end_time=render_end,
-                            channel_name=channel_name,
-                            view_layer_name=view_layer_name,
-                            batch_start_time=batch_start_time,
-                            render_duration_seconds=render_duration
-                        )
-                    else:
-                        filename = generate_filename_from_pattern(
-                            filename_pattern,
-                            blend_name,
-                            camera_name,
-                            frame_num,
-                            start_time=render_start,
-                            end_time=render_end,
-                            channel_name=None,
-                            view_layer_name=view_layer_name,
-                            batch_start_time=batch_start_time,
-                            render_duration_seconds=render_duration
-                        )
-                    
-                    # Update paths with new filename
-                    full_output_path = os.path.join(output_folder, filename + extension)
-                    print(f"✓ Render duration: {render_duration:.2f} seconds")
-
-                # Blender automatically saves the file, check multiple possible paths
-                possible_paths = [
-                    full_output_path,  # Our expected path
-                    filepath_without_ext + extension,  # Path without extension + extension
-                    filepath_without_ext + extension.upper(),  # Uppercase extension
-                ]
-                
-                # Add frame number variations (Blender might add frame numbers)
-                for base_path in [full_output_path, filepath_without_ext + extension]:
-                    possible_paths.append(base_path.replace(extension, f"_{frame_num:04d}{extension}"))
-                    possible_paths.append(base_path.replace(extension, f"{frame_num:04d}{extension}"))
-                
-                file_found = False
-                actual_path = None
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        file_found = True
-                        actual_path = path
-                        saved_paths.append(path)
-                        print(f"✓ Saved {channel_name} to: {path}")
-                        break
-                
-                if not file_found:
-                    # Last resort - try manual save
-                    success = save_render_result(scene, full_output_path)
-                    if success and os.path.exists(full_output_path):
-                        saved_paths.append(full_output_path)
-                        print(f"✓ Manually saved {channel_name} to: {full_output_path}")
-                    else:
-                        print(f"❌ Failed to save {channel_name}")
-                        print(f"   Expected at: {full_output_path}")
-                        print(f"   Tried paths: {possible_paths}")
-                
-                # Restore compositor state
-                restore_compositor_state(scene, original_compositor_state)
+                if success and os.path.exists(full_output_path):
+                    saved_paths.append(full_output_path)
+                    print(f"✓ Saved {channel_name} to: {full_output_path}")
+                else:
+                    print(f"❌ Failed to save {channel_name} to: {full_output_path}")
 
             # Restore original filepath and format
             render.filepath = original_filepath
@@ -1814,7 +1744,7 @@ class RENDER_OT_set_viewport_focal_length(Operator):
 class CAMERA_OT_dof_distance_pick(Operator):
     """Pick DOF focus distance using eyedropper"""
     bl_idname = "camera.dof_distance_pick"
-    bl_label = "DOF Distance (Pick) New"
+    bl_label = "Camera Focus"
     bl_description = "Pick focus distance from 3D viewport using eyedropper"
     bl_options = {'REGISTER', 'UNDO'}
     
@@ -1946,8 +1876,110 @@ class CAMERA_OT_focal_length_adjust(Operator):
         # Add modal handler
         context.window_manager.modal_handler_add(self)
         
-        # Set initial header text
-        context.area.header_text_set(f"Camera Focal Length: {self._initial_focal:.1f}mm")
+        # Set initial header text (safe for cases where area might be None)
+        if context.area:
+            context.area.header_text_set(f"Camera Focal Length: {self._initial_focal:.1f}mm")
+        
+        return {'RUNNING_MODAL'}
+    
+class CAMERA_OT_aperture_adjust(Operator):
+    """Adjust camera aperture (f-stop) with mouse"""
+    bl_idname = "camera.aperture_adjust"
+    bl_label = "Camera Aperture"
+    bl_description = "Adjust camera aperture/f-stop interactively with mouse (photographer.aperture_preset)"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    # Predefined aperture values from photographer addon
+    APERTURE_PRESETS = ['0.95', '1.2', '1.4', '1.8', '2.0', '2.4', '2.8', '3.5', '4.0', '4.9', '5.6', '6.7', '8.0', '9.3', '11', '13', '16', '20', '22']
+    
+    _initial_mouse_x = None
+    _initial_aperture = None
+    _initial_index = None
+    _camera = None
+    
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            # Calculate movement in preset steps (each 10 pixels = 1 step)
+            delta_pixels = event.mouse_x - self._initial_mouse_x
+            delta_steps = int(delta_pixels / 10)
+            
+            # Calculate new index within bounds
+            new_index = max(0, min(len(self.APERTURE_PRESETS) - 1, self._initial_index + delta_steps))
+            
+            # Get the aperture value from preset list
+            new_aperture_str = self.APERTURE_PRESETS[new_index]
+            
+            # Update photographer.aperture_preset property
+            if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'aperture_preset'):
+                self._camera.data.photographer.aperture_preset = new_aperture_str
+            else:
+                # Fallback message if photographer addon not available
+                if context.area:
+                    context.area.header_text_set(f"Aperture: f/{new_aperture_str} (Photographer addon not found)")
+                return {'RUNNING_MODAL'}
+            
+            # Update header text
+            if context.area:
+                context.area.header_text_set(f"Aperture: f/{new_aperture_str}")
+            
+            return {'RUNNING_MODAL'}
+        
+        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            # Confirm and finish
+            if context.area:
+                context.area.header_text_set(None)
+            
+            # Add keyframe if toggle is on
+            if context.scene.frh_camera_keyframe:
+                if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'aperture_preset'):
+                    self._camera.data.photographer.keyframe_insert(data_path="aperture_preset")
+            
+            return {'FINISHED'}
+        
+        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+            # Cancel and restore original value
+            if hasattr(self._camera.data, 'photographer') and hasattr(self._camera.data.photographer, 'aperture_preset'):
+                self._camera.data.photographer.aperture_preset = self.APERTURE_PRESETS[self._initial_index]
+            
+            if context.area:
+                context.area.header_text_set(None)
+            return {'CANCELLED'}
+        
+        return {'RUNNING_MODAL'}
+    
+    def invoke(self, context, event):
+        # Get active camera
+        camera = context.scene.camera
+        if not camera or camera.type != 'CAMERA':
+            self.report({'ERROR'}, "No active camera in scene")
+            return {'CANCELLED'}
+        
+        # Check if photographer addon is available
+        if not hasattr(camera.data, 'photographer') or not hasattr(camera.data.photographer, 'aperture_preset'):
+            self.report({'WARNING'}, "Photographer addon not found or aperture_preset property not available")
+            return {'CANCELLED'}
+        
+        self._camera = camera
+        self._initial_mouse_x = event.mouse_x
+        
+        # Get current aperture preset value (it's an enum string)
+        current_aperture = camera.data.photographer.aperture_preset
+        
+        # Find the index of current value in presets list
+        try:
+            self._initial_index = self.APERTURE_PRESETS.index(current_aperture)
+            self._initial_aperture = current_aperture
+        except ValueError:
+            # If not found, default to middle value (f/5.6)
+            self._initial_index = 10  # f/5.6
+            self._initial_aperture = self.APERTURE_PRESETS[self._initial_index]
+        
+        # Add modal handler
+        context.window_manager.modal_handler_add(self)
+        
+        # Set initial header text (safe for cases where area might be None)
+        if context.area:
+            context.area.header_text_set(f"Aperture: f/{self._initial_aperture}")
         
         return {'RUNNING_MODAL'}
 
@@ -1968,7 +2000,10 @@ def camera_context_menu_draw(self, context):
     if prefs and prefs.enable_camera_helpers:
         layout = self.layout
         layout.separator()
+        # Use operator_context to ensure proper invocation
+        layout.operator_context = 'INVOKE_DEFAULT'
         layout.operator("camera.focal_length_adjust", icon='OUTLINER_OB_CAMERA')
+        layout.operator("camera.aperture_adjust", icon='OUTLINER_OB_CAMERA')
         layout.operator("camera.dof_distance_pick", icon='EYEDROPPER')
 
 
@@ -1979,10 +2014,12 @@ def viewport_header_draw(self, context):
         # Only show if there's an active camera
         if context.scene.camera and context.scene.camera.type == 'CAMERA':
             layout = self.layout
-            layout.separator()
-            layout.operator("camera.focal_length_adjust", text="", icon='OUTLINER_OB_CAMERA')
-            layout.prop(context.scene, "frh_camera_keyframe", text="", icon='DECORATE_KEYFRAME', toggle=True)
-            layout.operator("camera.dof_distance_pick", text="", icon='EYEDROPPER')
+            # Use row to pack icons closer together
+            row = layout.row(align=True)
+            row.operator("camera.focal_length_adjust", text="", icon='OUTLINER_OB_CAMERA')
+            row.operator("camera.aperture_adjust", text="", icon='OUTLINER_OB_CAMERA')
+            row.operator("camera.dof_distance_pick", text="", icon='EYEDROPPER')
+            row.prop(context.scene, "frh_camera_keyframe", text="", icon='DECORATE_KEYFRAME', toggle=True)
 
 
 class RENDER_OT_suggest_keyframes(Operator):
@@ -2465,6 +2502,7 @@ def register():
     bpy.utils.register_class(RENDER_OT_open_output_folder)
     bpy.utils.register_class(RENDER_OT_set_viewport_focal_length)
     bpy.utils.register_class(CAMERA_OT_focal_length_adjust)
+    bpy.utils.register_class(CAMERA_OT_aperture_adjust)
     bpy.utils.register_class(CAMERA_OT_dof_distance_pick)
     bpy.utils.register_class(VIEW3D_MT_camera_dof_menu)
     bpy.utils.register_class(RENDER_OT_suggest_keyframes)
@@ -2527,6 +2565,7 @@ def unregister():
     bpy.utils.unregister_class(RENDER_OT_open_output_folder)
     bpy.utils.unregister_class(RENDER_OT_set_viewport_focal_length)
     bpy.utils.unregister_class(CAMERA_OT_focal_length_adjust)
+    bpy.utils.unregister_class(CAMERA_OT_aperture_adjust)
     bpy.utils.unregister_class(CAMERA_OT_dof_distance_pick)
     bpy.utils.unregister_class(VIEW3D_MT_camera_dof_menu)
     bpy.utils.unregister_class(RENDER_OT_suggest_keyframes)
