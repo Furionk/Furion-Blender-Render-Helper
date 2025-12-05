@@ -996,7 +996,7 @@ class RENDER_OT_specific_frames(Operator):
             print(f"Starting render of frame {frame_num} - {channel_name}...")
             from datetime import datetime
             render_start = datetime.now()
-            bpy.ops.render.render(write_still=True)
+            bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
             render_end = datetime.now()
             render_duration = (render_end - render_start).total_seconds()
             
@@ -1449,7 +1449,7 @@ class RENDER_OT_current_frame(Operator):
             render.use_file_extension = True
             
             # Render once - this populates the render result with all passes
-            bpy.ops.render.render(write_still=False)  # Don't write yet, we'll save passes individually
+            bpy.ops.render.render('INVOKE_DEFAULT', write_still=False)  # Don't write yet, we'll save passes individually
             render_end = datetime.now()
             render_duration = (render_end - render_start).total_seconds()
             
